@@ -35,20 +35,14 @@ def test_estimate_matches_hand_calculation_for_opus():
 
 def test_estimate_for_haiku_is_cheaper_than_opus():
     cap = CostCap(max_usd_per_call=10.0)
-    opus = cap.estimate(
-        model="claude-opus-4-7", input_tokens=1000, max_output_tokens=1000
-    )
-    haiku = cap.estimate(
-        model="claude-haiku-4-5", input_tokens=1000, max_output_tokens=1000
-    )
+    opus = cap.estimate(model="claude-opus-4-7", input_tokens=1000, max_output_tokens=1000)
+    haiku = cap.estimate(model="claude-haiku-4-5", input_tokens=1000, max_output_tokens=1000)
     assert haiku.total_usd < opus.total_usd
 
 
 def test_estimate_returns_breakdown_fields():
     cap = CostCap(max_usd_per_call=10.0)
-    est = cap.estimate(
-        model="gpt-5", input_tokens=1_000_000, max_output_tokens=100_000
-    )
+    est = cap.estimate(model="gpt-5", input_tokens=1_000_000, max_output_tokens=100_000)
     # gpt-5 input $1.25, output $10
     assert isinstance(est, EstimatedCost)
     assert est.input_usd == pytest.approx(1.25)
@@ -110,14 +104,27 @@ def test_cached_input_is_zero_when_model_has_no_cached_rate():
     assert est.cached_input_usd == 0.0
 
 
+def test_total_equals_sum_of_all_three_components():
+    # Documented invariant: total_usd == input_usd + output_usd + cached_input_usd
+    cap = CostCap(max_usd_per_call=10.0)
+    est = cap.estimate(
+        model="claude-sonnet-4-6",
+        input_tokens=2_000,
+        max_output_tokens=500,
+        cached_input_tokens=1_500,
+    )
+    assert est.input_usd > 0
+    assert est.output_usd > 0
+    assert est.cached_input_usd > 0
+    assert est.total_usd == pytest.approx(est.input_usd + est.output_usd + est.cached_input_usd)
+
+
 # ---------- check ----------
 
 
 def test_check_passes_when_under_cap():
     cap = CostCap(max_usd_per_call=0.50)
-    est = cap.check(
-        model="claude-opus-4-7", input_tokens=1000, max_output_tokens=1000
-    )
+    est = cap.check(model="claude-opus-4-7", input_tokens=1000, max_output_tokens=1000)
     # 1000 input * 15/M + 1000 output * 75/M = 0.015 + 0.075 = 0.090
     assert est.total_usd == pytest.approx(0.090)
     assert est.total_usd < 0.50
@@ -144,9 +151,7 @@ def test_check_raises_when_over_cap_with_correct_attrs():
 def test_check_equal_to_cap_passes_not_raises():
     cap = CostCap(max_usd_per_call=10.0)
     # Construct a custom model where the estimate is exactly 1.0
-    custom = ModelPrice(
-        input_per_million_usd=1_000_000.0, output_per_million_usd=0.0
-    )
+    custom = ModelPrice(input_per_million_usd=1_000_000.0, output_per_million_usd=0.0)
     cap.add_model("tester", custom)
     est = cap.check(model="tester", input_tokens=1, max_output_tokens=0)
     assert est.total_usd == pytest.approx(1.0)
@@ -205,6 +210,20 @@ def test_run_does_not_invoke_fn_when_over_cap():
             fn=fake_llm_call,
         )
     assert calls == [], "fn must NOT be called when cap is exceeded"
+
+
+def test_run_applies_cached_input_in_gate():
+    cap = CostCap(max_usd_per_call=10.0)
+    calls: list[int] = []
+    out = cap.run(
+        model="claude-opus-4-7",
+        input_tokens=1_000,
+        max_output_tokens=1_000,
+        cached_input_tokens=500,
+        fn=lambda: calls.append(1) or "ok",
+    )
+    assert out == "ok"
+    assert calls == [1]
 
 
 def test_run_passes_kwargs_to_fn():
@@ -269,9 +288,7 @@ def test_custom_prices_override_builtin_table_entirely():
 def test_add_model_registers_one_model_into_an_existing_cap():
     cap = CostCap(max_usd_per_call=10.0)
     cap.add_model("homemade", ModelPrice(0.5, 1.5))
-    est = cap.check(
-        model="homemade", input_tokens=1_000_000, max_output_tokens=1_000_000
-    )
+    est = cap.check(model="homemade", input_tokens=1_000_000, max_output_tokens=1_000_000)
     assert est.input_usd == pytest.approx(0.5)
     assert est.output_usd == pytest.approx(1.5)
 
@@ -287,10 +304,20 @@ def test_caller_cannot_mutate_internal_price_table_via_input_dict():
 
 
 def test_known_models_lists_registered_entries():
-    cap = CostCap(
-        max_usd_per_call=1.0, prices={"a": ModelPrice(1, 2), "b": ModelPrice(3, 4)}
-    )
+    cap = CostCap(max_usd_per_call=1.0, prices={"a": ModelPrice(1, 2), "b": ModelPrice(3, 4)})
     assert cap.known_models() == ["a", "b"]
+
+
+def test_default_cap_known_models_includes_builtin_aliases():
+    cap = CostCap(max_usd_per_call=1.0)
+    models = cap.known_models()
+    # canonical id and its short alias are both gateable on a default cap
+    assert "claude-opus-4-7" in models
+    assert "opus" in models
+    # gating via the alias resolves to the same price as the canonical id
+    via_alias = cap.estimate(model="opus", input_tokens=1000, max_output_tokens=1000)
+    via_canonical = cap.estimate(model="claude-opus-4-7", input_tokens=1000, max_output_tokens=1000)
+    assert via_alias.total_usd == via_canonical.total_usd
 
 
 # ---------- constructor + property ----------

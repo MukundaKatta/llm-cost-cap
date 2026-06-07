@@ -25,8 +25,7 @@ class CostExceededError(Exception):
         self.cap_usd = cap_usd
         self.model = model
         super().__init__(
-            f"estimated cost ${estimated_usd:.6f} for model {model!r} "
-            f"exceeds cap ${cap_usd:.6f}"
+            f"estimated cost ${estimated_usd:.6f} for model {model!r} exceeds cap ${cap_usd:.6f}"
         )
 
 
